@@ -4,7 +4,9 @@
 
 import random
 
-import albumentations.augmentations.functional as F
+from albumentations.augmentations.color.functional import shift_rgb
+from albumentations.augmentations.utils import normalize
+from albumentations.augmentations.noise.transforms import GaussNoise
 import cv2
 import numpy as np
 import torch

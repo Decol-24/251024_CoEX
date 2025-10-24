@@ -98,10 +98,10 @@ class Feature(SubModule):
         super(Feature, self).__init__()
         self.cfg = cfg['backbone']
         self.type = self.cfg['type']
-        chans = self.cfg['channels'][self.type]
-        layers = self.cfg['layers'][self.type]
+        chans = self.cfg['channels'][self.type] #[16,24,32,96,160]
+        layers = self.cfg['layers'][self.type] #[1,2,3,5,6]
 
-        if self.type == 'custom_basic':
+        if self.type == 'custom_basic': #no
 
             self.conv_stem = nn.Sequential(
                 BasicConv(3, chans[0], kernel_size=3, stride=2, padding=1),
@@ -198,7 +198,7 @@ class Feature(SubModule):
                                           nn.ReLU(inplace=True),
                                           nn.Conv2d(128, 64, kernel_size=1, padding=0, stride = 1, bias=False))
 
-        else:
+        else: #type 是这个
 
             pretrained = False if self.cfg['from_scratch'] else True
             model = timm.create_model(self.type, pretrained=pretrained, features_only=True)
@@ -290,8 +290,9 @@ class Feature(SubModule):
                 x8 = self.layer2(x4)
                 x16 = self.layer3(x8)
                 x32 = self.layer4(x16)
-            else:
-                x = self.bn1(self.conv_stem(x))
+            else: #是这个
+                x = self.conv_stem(x) #一般的conv2d Conv2d(3, 32, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+                x = self.bn1(x) # BN(32) + ReLU6
                 x2 = self.block0(x)
                 x4 = self.block1(x2)
 

@@ -5,28 +5,13 @@ import numpy as np
 import cv2
 import skimage
 import skimage.io
-
 import torch
 from torch.nn import functional as F
-from torch.utils.data import DataLoader
-import pytorch_lightning as pl
 from pytorch_lightning import LightningModule
-# from pytorch_lightning.loggers import TestTubeLogger
-from pytorch_lightning.loggers import TensorBoardLogger
-
 from ruamel.yaml import YAML
-
-# from models import *
 from utils.load import load_class
-from dataloaders import listflowfile as lt
-from dataloaders import SceneFlowLoader as SFL
-from dataloaders import KITTIloader2012 as ls12
-from dataloaders import KITTIloader2015 as ls15
-from dataloaders import KITTILoader as KL
-from dataloaders import KITTI_submission_loader as KSL
 
 import pdb
-
 
 configs = [
     'cfg_coex.yaml',
@@ -34,6 +19,38 @@ configs = [
     ]
 config_num = 0
 
+def evaluate_time(Net,imgL,imgR,device,**kwargs):
+    import time
+
+    Net = Net.to(device)
+    imgL = imgL.to(device)
+    imgR = imgR.to(device)
+
+    for i in range(10):
+        preds = Net(imgL, imgR)
+
+    times = 30
+    start = time.perf_counter()
+    for i in range(times):
+        preds = Net(imgL, imgR)
+    end = time.perf_counter()
+
+    avg_run_time = (end - start) / times
+
+    return avg_run_time
+
+def flops(Net,device):
+    Net = Net.to(device)
+    input = torch.randn(1,3,256,512).to(device)
+
+    from fvcore.nn import FlopCountAnalysis
+    flops = FlopCountAnalysis(Net, (input, input))   # FLOPs（乘加=2）
+    total_flops = flops.total()
+
+    total_params = sum(p.numel() for p in Net.parameters())
+    # print(f"\nFLOPs: {total_flops/1e9:.2f} GFLOPs, parameters: {total_params / 1e6:.2f} M")
+
+    return total_flops,total_params
 
 class Stereo(LightningModule):
 
@@ -269,204 +286,43 @@ def load_configs(path):
     cfg['model']['stereo']['backbone'].update(backbone_cfg)
     return cfg
 
+def run_once(Net,imgL,imgR,device,**kwargs):
 
-def copy_dir(save_dir, name, save_version):
-    savedir = '{}/{}/version_{}/project/'.format(save_dir, name, save_version)
-    datadirs = ['configs', 'dataloaders', 'models', 'utils']
-    if os.path.exists(savedir):
-        shutil.rmtree(savedir)
-    os.makedirs(savedir)
-    for file in glob.glob('./*.py'):
-        shutil.copyfile('./{}'.format(file),
-                        '{}{}'.format(savedir, file))
-    for datadir in datadirs:
-        shutil.copytree('./{}'.format(datadir),
-                        '{}{}'.format(savedir, datadir))
-    return save_version
+    Net = Net.to(device)
+    imgL = imgL.to(device)
+    imgR = imgR.to(device)
 
+    preds = Net(imgL, imgR)
+
+    return
 
 if __name__ == '__main__':
-    pl.seed_everything(42)
     cfg = load_configs('./configs/stereo/{}'.format(configs[config_num]))
     # os.environ['CUDA_VISIBLE_DEVICES'] = cfg['device']
     logging_pth = cfg['training']['paths']['logging']
     ###
-    th, tw = cfg['training']['th'], cfg['training']['tw']
-    ''' SceneFlow Training Part '''
-    if cfg['training']['train_on']['sceneflow']:
-        sceneflowpath = cfg['training']['paths']['sceneflow']
-        all_left_img, all_right_img, all_left_disp, all_focal, test_left_img, test_right_img, test_left_disp, test_focal = lt.dataloader(sceneflowpath)
-        sceneflow_train = SFL.ImageLoader(
-            all_left_img, all_right_img, all_focal, all_left_disp,
-            True, th=th, tw=tw)
-        sceneflow_train = DataLoader(
-            sceneflow_train, batch_size=cfg['training']['batch_size'],
-            num_workers=16, shuffle=True, drop_last=False)
-        sceneflow_test = SFL.ImageLoader(
-            test_left_img, test_right_img, test_focal, test_left_disp,
-            False)
-        sceneflow_test = DataLoader(
-            sceneflow_test, batch_size=1, num_workers=16,
-            shuffle=False, drop_last=False)
+    th, tw = 288, 576 
 
-        # Model
-        log_name = 'sceneflow'
-        if cfg['training']['load_version'] is not None:
-            load_version = cfg['training']['load_version']
-            ckpt = '{}/{}/version_{}/checkpoints/sceneflow-epoch={}.ckpt'.format(
-                logging_pth, cfg['model']['name'], load_version,
-                cfg['training']['sceneflow_max_epochs']-1)
-            stereo = Stereo.load_from_checkpoint(ckpt, cfg=cfg, dataname=log_name)
-            
-        else:
-            stereo = Stereo(cfg, 'sceneflow')
+    log_name = 'sceneflow'
+    device = 'cpu'
 
-        version = copy_dir(
-            logging_pth, cfg['model']['name'], cfg['training']['save_version'])
-        # resume_from_checkpoint = None
-
-        logger = TensorBoardLogger(
-            logging_pth,
-            cfg['model']['name'],
-            version=version)
-        gpu_stats = pl.callbacks.GPUStatsMonitor()
-        lr_monitor = pl.callbacks.LearningRateMonitor()
-        checkpoint_callback = pl.callbacks.ModelCheckpoint(
-            filename=log_name+'-{epoch}',
-            save_last=True,
-            save_top_k=-1,
-            monitor=log_name+'_train_loss_epoch')
-        trainer = pl.Trainer(
-            accelerator='dp',
-            logger=logger,
-            callbacks=[gpu_stats, lr_monitor, checkpoint_callback],
-            precision=cfg['precision'],
-            gpus=cfg['device'],
-            max_epochs=cfg['training']['sceneflow_max_epochs'],
-            # resume_from_checkpoint=resume_from_checkpoint,
-            # benchmark=True,
-            # accumulate_grad_batches=1,
-            gradient_clip_val=0.1,
-            # stochastic_weight_avg=True,
-            # track_grad_norm=2,
-            weights_summary='full',
-            )
-
-        trainer.fit(stereo, sceneflow_train, sceneflow_test)
-        trainer.test(stereo, sceneflow_test)
-
-    ''' KITTI Training Part '''
-    all_left_img, all_right_img, all_left_disp, all_calib, val_left_img, val_right_img, val_left_disp, val_calib = [], [], [], [], [], [], [], []
-    if cfg['training']['train_on']['kitti12']:
-        all_left_img12, all_right_img12, all_left_disp12, all_calib12, val_left_img12, val_right_img12, val_left_disp12, val_calib12 = ls12.dataloader(
-            cfg['training']['paths']['kitti12'], True)
-        all_left_img += all_left_img12
-        all_right_img += all_right_img12
-        all_left_disp += all_left_disp12
-        all_calib += all_calib12
-        val_left_img += val_left_img12
-        val_right_img += val_right_img12
-        val_left_disp += val_left_disp12
-        val_calib += val_calib12
-        log_name = 'kitti12'
-
-    if cfg['training']['train_on']['kitti15']:
-        all_left_img15, all_right_img15, all_left_disp15, all_calib15, val_left_img15, val_right_img15, val_left_disp15, val_calib15 = ls15.dataloader(
-            cfg['training']['paths']['kitti15'], True)
-        all_left_img += all_left_img15
-        all_right_img += all_right_img15
-        all_left_disp += all_left_disp15
-        all_calib += all_calib15
-        val_left_img += val_left_img15
-        val_right_img += val_right_img15
-        val_left_disp += val_left_disp15
-        val_calib += val_calib15
-        log_name = 'kitti15'
-
-    if cfg['training']['train_on']['kitti12'] and cfg['training']['train_on']['kitti15']:
-        log_name = 'kitti'
-
-    if cfg['training']['train_on']['kitti12'] or cfg['training']['train_on']['kitti15']:
-        kitti_train = KL.ImageLoader(
-            all_left_img, all_right_img, all_left_disp, all_calib, th, tw,
-            training=True)
-        kitti_train = DataLoader(
-            kitti_train, batch_size=cfg['training']['batch_size'],
-            num_workers=16, shuffle=True, drop_last=False)
-        kitti_val = KL.ImageLoader(
-            val_left_img, val_right_img, val_left_disp, val_calib,
-            training=False)
-        kitti_val = DataLoader(
-            kitti_val, batch_size=1,
-            num_workers=16, shuffle=False, drop_last=False)
-
-        # Model
-        if cfg['training']['load_version'] is not None:
-            load_version = cfg['training']['load_version']
-        else:
-            assert(cfg['training']['train_on']['sceneflow'])
-            load_version = cfg['training']['save_version']
-
+    if cfg['training']['load_version'] is not None:
+        load_version = cfg['training']['load_version']
         ckpt = '{}/{}/version_{}/checkpoints/sceneflow-epoch={}.ckpt'.format(
             logging_pth, cfg['model']['name'], load_version,
             cfg['training']['sceneflow_max_epochs']-1)
-        # ckpt = '{}/{}/version_{}/checkpoints/last.ckpt'.format(
-        #     logging_pth, cfg['model']['name'], load_version)
         stereo = Stereo.load_from_checkpoint(ckpt, cfg=cfg, dataname=log_name)
+        
+    else:
+        stereo = Stereo(cfg, 'sceneflow')
 
-        logger = TensorBoardLogger(
-            logging_pth,
-            cfg['model']['name'],
-            version=cfg['training']['save_version'])
-        gpu_stats = pl.callbacks.GPUStatsMonitor()
-        lr_monitor = pl.callbacks.LearningRateMonitor()
-        checkpoint_callback = pl.callbacks.ModelCheckpoint(
-            filename=log_name+'-{epoch}',
-            save_last=True,
-            save_top_k=2,
-            monitor=log_name+'_val_3pxError')
-        trainer = pl.Trainer(
-            accelerator='dp',
-            logger=logger,
-            callbacks=[gpu_stats, lr_monitor, checkpoint_callback],
-            precision=cfg['precision'],
-            gpus=cfg['device'],
-            max_epochs=cfg['training']['kitti_max_epochs'],
-            # resume_from_checkpoint=resume_from_checkpoint,
-            # benchmark=True,
-            # accumulate_grad_batches=1,
-            gradient_clip_val=0.1,
-            # stochastic_weight_avg=True,
-            # track_grad_norm=2,
-            weights_summary='full',
-            )
+    imgL = torch.randn(1,3,th,tw)
+    imgR = torch.randn(1,3,th,tw)
 
-        trainer.fit(stereo, kitti_train, kitti_val)
+    run_once(Net=stereo,imgL=imgL,imgR=imgR,device=device)
 
-    if cfg['training']['train_on']['kitti12']:
-        datapath = cfg['training']['paths']['kitti12'].replace('training', 'testing')
-        test_left_img, test_right_img, test_calib = KSL.listfiles(datapath, 'kitti12')
-        kitti_test = KSL.ImageLoader(test_left_img, test_right_img, test_calib)
-        kitti_test = DataLoader(
-            kitti_test, batch_size=1,
-            num_workers=16, shuffle=False, drop_last=False)
-        trainer.test(stereo, kitti_test)
-
-    if cfg['training']['train_on']['kitti15']:
-        datapath = cfg['training']['paths']['kitti15'].replace('training','testing')
-        test_left_img, test_right_img, test_calib = KSL.listfiles(datapath, 'kitti15')
-        kitti_test = KSL.ImageLoader(test_left_img, test_right_img, test_calib)
-        kitti_test = DataLoader(
-            kitti_test, batch_size=1,
-            num_workers=16, shuffle=False, drop_last=False)
-        trainer.test(stereo, kitti_test)
-
-
-
-class StereoTRT(Stereo):
-
-    def forward(self, imgL):
-
-        cost, spx_pred = self.stereo(imgL)
-            
-        return cost, spx_pred
+    # avg_run_time = evaluate_time(Net=stereo,imgL=imgL,imgR=imgR,device=device)
+    # total_flops,total_params = flops(stereo,device)
+    
+    # print(avg_run_time)
+    # print(f"\nFLOPs: {total_flops/1e9:.2f} GFLOPs, parameters: {total_params / 1e6:.2f} M")

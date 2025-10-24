@@ -6,20 +6,20 @@ channels:
   - anaconda
   - defaults
 dependencies:
-  - python=3.7
+  - python=3.9
   - pip
   - numpy
-  - pytorch==1.11.0
-  - torchvision==0.12.0
-  - cudatoolkit=11.3
+  - pytorch
+  - torchvision
+  - cudatoolkit
   - ruamel.yaml
   - pillow
   - scikit-image
   - pip:
-    - pytorch-lightning==1.6.5
+    - pytorch-lightning
     - opencv-contrib-python
     - albumentations
-    - timm==0.6.5
+    - timm
     - test-tube
     # - --find-links https://github.com/pytorch/TensorRT/releases
     # - torch-tensorrt
